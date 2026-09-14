@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+poster_cache/
+boom_history.json
+login.dat
+*.private.json
+.env
+.venv/
+build/
+*.dist/
+*.build/
+*.zip
