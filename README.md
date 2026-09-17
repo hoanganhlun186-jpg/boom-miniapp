@@ -1,20 +1,13 @@
-# BOOM miniapp — build EXE bằng Nuitka
+# BOOM miniapp — Nuitka standalone và cập nhật tự động
 
-Bộ CLIENT v2.4, build Windows x64 dạng thư mục standalone, không onefile.
+Upload nội dung bộ này vào gốc repository boom-miniapp, gồm .github. Không upload bộ OWNER hoặc khóa riêng.
 
-## Đưa lên GitHub
-1. Giải nén ZIP nguồn này.
-2. Upload toàn bộ nội dung vào gốc repository, gồm cả thư mục `.github`. Không upload nguyên ZIP và không đặt code trong thư mục con.
-3. Kiểm tra trên GitHub có `.github/workflows/build.yml` và `netshort_studio.py` ở đúng vị trí.
-4. Mở Actions → Build BOOM miniapp Windows → Run workflow. Khi push lên main/master cũng tự build.
-5. Khi build xanh, mở lượt chạy → Artifacts → tải BOOM-miniapp-Windows-x64.
-6. Giải nén toàn bộ ZIP tải về, chạy BOOM miniapp.exe. Giữ tất cả DLL, thư mục và ffmpeg.exe cạnh EXE.
+## Một lần đầu
+Thêm GitHub Actions Secret BOOM_SIGNING_KEY_XML theo hướng dẫn trong bộ OWNER. Trên VPS cài bộ SERVER và cấu hình repository BOOM. Link ZIP GitHub Release phải tải công khai được.
 
-Không cần API key hoặc mật khẩu trong GitHub Secrets để build. Người dùng đăng nhập khi chạy app. Server phải được cập nhật đường detail của bản v2.4 để lấy đúng poster DramaWave.
+## Publish
+Clone repository về máy bằng GitHub Desktop; thư mục giải nén ZIP không phải repository Git. Chép mã mới vào bản clone, giữ VERSION hiện hành trong boom_update_core.py. Chạy publish_tool_boom.py: bấm Publish để tăng số cuối, commit, tạo tag và push. Workflow build theo tag v*, ký và đưa ZIP lên Releases. Chạy thủ công lần đầu bằng Actions > Run workflow cũng được.
 
-Đây là bộ nguồn và cấu hình build, chưa phải EXE đã biên dịch. Build lỗi thì gửi phần log màu đỏ trong Actions để kiểm tra.
+GitHub giữ ZIP, server chỉ cập nhật link/phiên bản khoảng 2 phút/lần. Khách mở app: tự tải bản mới từ GitHub, giải nén và mở lại. Không có bước ký/phát hành VPS thủ công sau khi đã cấu hình.
 
-## Build trên máy Windows
-Cài Python 3.11 x64 và Visual Studio Build Tools (Desktop development with C++).
-Chạy `python -m pip install -r requirements.txt nuitka ordered-set zstandard`, sau đó `python build_standalone.py`.
-Kết quả: `build/netshort_studio.dist/`.
+Kết quả standalone gồm BOOM miniapp.exe, FFmpeg và thư viện; giữ nguyên cả thư mục. VERSION cũng hiển thị trong app. Source và cấu hình đã kiểm thử; chưa có EXE build thực tế trong bộ ZIP này.

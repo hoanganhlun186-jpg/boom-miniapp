@@ -45,7 +45,7 @@ class GatewayTransport:
 
     def get(self,path,params=None):
         from netshort_tool import ToolError
-        match=re.fullmatch(r'/api/(netshort|dramawave)/(.+)',path)
+        match=re.fullmatch(r'/api/(netshort|dramawave|shortmax|dramabox)/(.+)',path)
         if not match:raise ToolError('Đường dẫn API không hợp lệ.')
         query=dict(params or {})
         if self.language:query['language']=self.language

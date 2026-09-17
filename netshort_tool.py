@@ -201,12 +201,16 @@ class API(GatewayTransport):
         result, seen, cursors = [], set(), set()
         params = {}
         title = sid
+        series_total=0
         for _ in range(100):
             payload = self.get(f'/api/{self.provider}/episodes/{sid}', params)
             data = payload.get('data', payload)
             items = data.get('items', data.get('episodes')) if isinstance(data, dict) else data
             if not isinstance(items, list):
                 raise ToolError('Full Episodes không có data.items/data.episodes dạng danh sách.')
+            if isinstance(data,dict):
+                try:series_total=max(series_total,int(data.get('total') or 0))
+                except (ValueError,TypeError):pass
             meta = data.get('meta', {}) if isinstance(data, dict) else {}
             if not isinstance(meta, dict):
                 meta = {}
@@ -215,7 +219,7 @@ class API(GatewayTransport):
                 if not isinstance(ep, dict):
                     continue
                 eid = str(ep.get('id') or ep.get('episodeId') or '')
-                if re.fullmatch(r'[A-Za-z0-9_-]{1,80}' if self.provider == 'dramawave' else r'\d{1,25}', eid) and eid not in seen:
+                if re.fullmatch(r'[A-Za-z0-9_-]{1,80}' if self.provider != 'netshort' else r'\d{1,25}', eid) and eid not in seen:
                     seen.add(eid)
                     result.append(dict(ep, id=eid))
             paging = data.get('pagination', {}) if isinstance(data, dict) else {}
@@ -238,6 +242,7 @@ class API(GatewayTransport):
             except (ValueError, TypeError):
                 return 0
         result.sort(key=number)
+        for ep in result:ep['_series_total']=max(series_total,len(result))
         return str(title), result
 
 
@@ -280,7 +285,7 @@ def download(source, destination, stop, progress):
     kind = str(source.get('type', '')).lower()
     if '.m3u8' in urlparse(url).path.lower() or kind in ('hls', 'm3u8'):
         from dramawave_hls import download_hls
-        return download_hls(url, destination, stop, lambda done,total: progress(done,total))
+        return download_hls(url, destination, stop, lambda done,total: progress(done,total), referer=source.get('referer'))
     if any(x in urlparse(url).path.lower() for x in ('.m3u8', '.mpd')) or kind in ('hls', 'm3u8', 'dash', 'mpd'):
         raise ToolError('Source HLS/DASH chưa được bản thử nghiệm hỗ trợ; chỉ tải video trực tiếp.')
     headers = {}
@@ -454,12 +459,12 @@ class AppLogic:
             messagebox.showinfo('Phụ đề','Quét danh sách tập trước.')
             return
         selected = [int(i) for i in self.tree.selection()]
-        if not selected and self.scanned_provider == 'dramawave':
+        if not selected and self.scanned_provider != 'netshort':
             selected = list(range(len(self.items)))
         if not selected:
             messagebox.showinfo('Phụ đề','Chọn các tập cần kiểm tra phụ đề, hoặc bấm Chọn tất cả.')
             return
-        if self.scanned_provider == 'dramawave':
+        if self.scanned_provider != 'netshort':
             self.show_subtitle_choices({i: subtitle_tracks({'data':self.items[i]}) for i in selected})
             return
         base,lang,sid = self.scanned
@@ -579,7 +584,7 @@ class AppLogic:
         self.source_provider = 'dramawave' if self.provider_choice.get() == 'DramaWave' else 'netshort'
         if self.fixed_provider:
             self.source_provider = self.fixed_provider
-        if self.sid.get().strip() and not re.fullmatch(r'[A-Za-z0-9_-]{1,80}' if self.source_provider == 'dramawave' else r'\d{1,25}', self.sid.get().strip()):
+        if self.sid.get().strip() and not re.fullmatch(r'[A-Za-z0-9_-]{1,80}' if self.source_provider != 'netshort' else r'\d{1,25}', self.sid.get().strip()):
             messagebox.showerror('Series ID', 'Series ID thủ công phải là số.')
             return
         self.tree.delete(*self.tree.get_children())
@@ -594,6 +599,10 @@ class AppLogic:
                 sid = series_id(value)
                 if not sid:
                     raise ToolError('Nhập ID bộ phim DramaWave hoặc link có ID rõ ràng.')
+            elif self.source_provider in ('shortmax','dramabox'):
+                from studio_providers import series_id as new_series_id
+                sid=new_series_id(value,self.source_provider)
+                if not sid:raise ToolError('Chưa đọc được ID từ link. Hãy tìm theo tên phim hoặc nhập ID bộ phim.')
             else:
                 sid = resolve_series(value, self.stop)
             self.scanned_provider = self.source_provider
@@ -630,7 +639,7 @@ class AppLogic:
                 eid = ep['id']
                 self.emit('status', i, 'Đang lấy Episode Source…')
                 try:
-                    payload = {'data': ep} if self.scanned_provider == 'dramawave' else api.get(f'/api/netshort/episodes/{sid}/{eid}/source')
+                    payload = {'data': ep} if self.scanned_provider != 'netshort' else api.get(f'/api/netshort/episodes/{sid}/{eid}/source')
                     candidates = source_candidates(payload)
                     if not candidates and mode != 'Chỉ phụ đề':
                         raise ToolError('Không có source được cấp; bỏ qua.')
@@ -724,7 +733,7 @@ class AppLogic:
                 title, sid, self.items, config = args
                 self.scanned_title = title
                 self.scanned = (*config, sid)
-                if self.scanned_provider == 'dramawave':
+                if self.scanned_provider != 'netshort':
                     self.subtitle_results = {i: subtitle_tracks({'data':ep}) for i,ep in enumerate(self.items)}
                 for i, ep in enumerate(self.items):
                     extra = ep.get('extra') or {}
@@ -732,7 +741,7 @@ class AppLogic:
                         ep.get('title') or f'Tập {i + 1}', ep['id'],
                         'Có' if extra.get('isLocked') or extra.get('isVip') else 'Không', 'Chưa lấy source'))
                 self.info.set(f'{title} — Series ID: {sid} — API trả {len(self.items)} tập. Ctrl/Shift để chọn nhiều tập.')
-                if self.scanned_provider == 'dramawave':
+                if self.scanned_provider != 'netshort':
                     from netshort_subtitles import coverage
                     languages = coverage(self.subtitle_results)
                     vi_count = sum(1 for entries in self.subtitle_results.values() if any(language_matches(t['language'],'vi') for t in entries))

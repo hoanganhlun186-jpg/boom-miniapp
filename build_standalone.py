@@ -1,5 +1,7 @@
 """Build on Windows with Python 3.11 and MSVC installed."""
 import ast
+import json
+from boom_update_core import VERSION, APP_ID
 import os
 from pathlib import Path
 import shutil
@@ -21,9 +23,12 @@ def main():
         '--msvc=latest','--assume-yes-for-downloads','--output-dir=build',
         '--output-filename=BOOM miniapp.exe','--include-data-dir=icons=icons',
         '--include-data-files=boom.svg=boom.svg','--include-data-files=check.svg=check.svg',
+        '--include-data-files=boom_update_public.json=boom_update_public.json',
+        '--product-name=BOOM miniapp','--product-version='+VERSION,'--file-version='+VERSION,
         '--report=build/compilation-report.xml','netshort_studio.py']
     subprocess.run(command,check=True)
     output=root/'build'/'netshort_studio.dist'
+    (output/'boom-release.json').write_text(json.dumps({'app':APP_ID,'version':VERSION}),encoding='utf-8')
     import imageio_ffmpeg
     shutil.copy2(imageio_ffmpeg.get_ffmpeg_exe(),output/'ffmpeg.exe')
     (output/'HUONG_DAN.txt').write_text('Giai nen toan bo thu muc. Mo BOOM miniapp.exe de dang nhap. Khong tach rieng file EXE. Khong can cai Python.\n',encoding='utf-8')

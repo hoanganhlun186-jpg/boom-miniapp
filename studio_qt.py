@@ -1,3 +1,4 @@
+from studio_providers import NAMES, LANGUAGES, NEW_PROVIDERS, catalog_endpoint, movie_rows
 from datetime import datetime
 import time
 """Modern Qt presentation; networking and media logic stay in original modules."""
@@ -10,12 +11,13 @@ from PyQt6.QtCore import Qt, QObject, pyqtSignal, QTimer
 from PyQt6.QtGui import QPixmap, QIcon
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QLabel, QPushButton,
     QLineEdit, QVBoxLayout, QHBoxLayout, QGridLayout, QScrollArea, QFrame, QComboBox,
-    QCheckBox, QProgressBar, QTextEdit, QStackedWidget, QListWidget, QTableWidget,
+    QSpinBox, QCheckBox, QProgressBar, QTextEdit, QStackedWidget, QListWidget, QTableWidget,
     QTableWidgetItem, QHeaderView, QFileDialog, QDialog, QFormLayout, QDialogButtonBox)
 from studio_backend import Backend, original_key
 from studio_catalog import catalog_rows, next_cursor, load_poster, dramawave_rows
 from netshort_tool import API, ToolError
 from netshort_subtitles import coverage, language_name, language_matches
+from boom_update_core import VERSION
 from studio_files import safe_name
 
 STYLE = '''
@@ -121,7 +123,7 @@ class Card(QFrame):
 class MainWindow(QMainWindow):
     def __init__(self,account=None):
         super().__init__()
-        self.setWindowTitle('BOOM miniapp')
+        self.setWindowTitle(f'BOOM miniapp • v{VERSION}')
         self.setWindowIcon(QIcon(str(Path(__file__).with_name('boom.svg'))))
         self.resize(1480,960)
         self.setMinimumSize(1160,780)
@@ -172,6 +174,8 @@ class MainWindow(QMainWindow):
         nav.setContentsMargins(18,27,18,22)
         nav.addWidget(label('BOOM','brand'))
         nav.addWidget(label('m i n i a p p','muted'))
+        self.version_label=label(f'v{VERSION}','accent')
+        nav.addWidget(self.version_label)
         nav.addSpacing(35)
         self.nav_buttons = []
         for index,text in enumerate(('▣  Thư viện','↓  Đang tải','◷  Lịch sử')):
@@ -182,7 +186,7 @@ class MainWindow(QMainWindow):
         nav.addStretch()
         nav.addWidget(label('NHÀ CUNG CẤP','muted'))
         self.provider_buttons = {}
-        for code,title in (('netshort','NetShort'),('dramawave','DramaWave')):
+        for code,title in NAMES.items():
             item = button(title,lambda _,p=code:self.switch_provider(p))
             item.setCheckable(True)
             item.setChecked(code==self.provider)
@@ -223,7 +227,8 @@ class MainWindow(QMainWindow):
         layout.addLayout(row)
         filters = QHBoxLayout()
         filters.addWidget(button('Đề xuất',lambda:self.load_catalog('home')))
-        filters.addWidget(button('Thịnh hành',lambda:self.load_catalog('trending')))
+        self.trending_button=button('Thịnh hành',lambda:self.load_catalog('trending'))
+        filters.addWidget(self.trending_button)
         self.more = button('Xem thêm',self.load_more)
         self.more.setEnabled(False)
         filters.addWidget(self.more)
@@ -337,8 +342,15 @@ class MainWindow(QMainWindow):
         self.with_subtitles = QCheckBox('Tải kèm phụ đề SRT')
         self.with_subtitles.setChecked(True)
         self.with_subtitles.toggled.connect(self.subtitle_option_changed)
-        il.addWidget(self.with_subtitles)
-        il.addWidget(label('Video luôn được tải cùng các tập đã chọn.','muted',True))
+        self.with_subtitles.hide()
+        self.content_mode=QComboBox();self.content_mode.addItems(['Video + SRT','Chỉ video','Chỉ SRT'])
+        self.content_mode.currentIndexChanged.connect(lambda i:self.with_subtitles.setChecked(i!=1))
+        il.addWidget(self.content_mode)
+        self.output_mode=QComboBox();self.output_mode.addItems(['Từng tập rời','Gộp thành một file','Chia phần'])
+        il.addWidget(self.output_mode)
+        self.group_size=QSpinBox();self.group_size.setRange(2,200);self.group_size.setValue(10)
+        self.group_size.setSuffix(' tập / phần');self.group_size.hide();il.addWidget(self.group_size)
+        self.output_mode.currentIndexChanged.connect(lambda i:self.group_size.setVisible(i==2))
         concurrency=QHBoxLayout()
         concurrency.addWidget(label('Số tập tải cùng lúc'),1)
         self.worker_count=QComboBox()
@@ -409,6 +421,7 @@ class MainWindow(QMainWindow):
         dialog.resize(570,260)
         form = QFormLayout(dialog)
         lang = QLineEdit(self.backend.language.get())
+        form.addRow('Phiên bản',label(f'v{VERSION}'))
         form.addRow('Tài khoản',label((self.account or {}).get('username','Chưa đăng nhập')))
         form.addRow('Ngôn ngữ nội dung',lang)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save|QDialogButtonBox.StandardButton.Cancel)
@@ -426,9 +439,10 @@ class MainWindow(QMainWindow):
         self.art_generation += 1
         self.art_stop.set()
         self.provider=provider
+        self.trending_button.setVisible(provider not in NEW_PROVIDERS)
         self.backend.fixed_provider=provider
-        self.backend.provider_choice.set('NetShort' if provider=='netshort' else 'DramaWave')
-        self.backend.language.set('vi_VN' if provider=='netshort' else 'vi-VN')
+        self.backend.provider_choice.set(NAMES[provider])
+        self.backend.language.set(LANGUAGES[provider])
         self.backend.scanned=None; self.backend.items=[]; self.backend.scanned_title=''
         self.current_movie=None
         self.cursor=None
@@ -477,10 +491,11 @@ class MainWindow(QMainWindow):
                 params={'limit':30}
                 if query:params['q']=query
                 if cursor:params['cursor']=cursor
-                endpoint=action if provider=='netshort' else ('search' if action=='search' else 'search/hot-list')
+                endpoint=catalog_endpoint(provider,action)
                 payload=api.get('/api/'+provider+'/'+endpoint,params)
                 if provider=='netshort':rows=catalog_rows(payload)
-                else:rows=dramawave_rows(payload)
+                elif provider=='dramawave':rows=dramawave_rows(payload)
+                else:rows=movie_rows(payload,provider)
                 nxt=next_cursor(payload)
                 self.events.event.emit(('catalog',generation,rows,nxt if nxt!=cursor else None))
                 groups={}
@@ -590,7 +605,7 @@ class MainWindow(QMainWindow):
             self.sub_layout.addWidget(item)
         failed=sum(x is None for x in results.values())
         self.sub_note.setText(f'Đã quét {len(results)} tập • {len(languages)} ngôn ngữ' + (f' • {failed} tập chưa rõ' if failed else ''))
-        if not languages:self.sub_layout.addWidget(label('Chưa thấy phụ đề riêng.\nBỏ tick tải kèm SRT để tải video.','muted',True))
+        if not languages:self.sub_layout.addWidget(label('Chưa thấy phụ đề riêng.\nChọn Chỉ video để tải video.','muted',True))
         self.commit_languages()
 
     def commit_languages(self):
@@ -601,7 +616,7 @@ class MainWindow(QMainWindow):
         for item in self.language_checks.values():item.setEnabled(enabled)
 
     def set_busy(self,busy):
-        for widget in [self.download_button,self.rescan_button,self.settings_button,self.folder_button,self.with_subtitles,self.worker_count,*self.episode_checks.values()]:widget.setEnabled(not busy)
+        for widget in [self.download_button,self.rescan_button,self.settings_button,self.folder_button,self.with_subtitles,self.content_mode,self.output_mode,self.group_size,self.worker_count,*self.episode_checks.values()]:widget.setEnabled(not busy)
         self.subtitle_option_changed()
         self.status.setText('●  Đang xử lý…' if busy else '●  Sẵn sàng')
 
@@ -610,8 +625,10 @@ class MainWindow(QMainWindow):
         if b.busy:return
         if not b.scanned or not b.tree.selected:self.note('Chọn ít nhất một tập để tải.'); return
         if (b.base.get().strip(),b.language.get().strip())!=b.scanned[:2]:self.note('Cài đặt đã đổi. Hãy mở lại phim để quét lại.'); return
-        b.download_mode.set('Video + phụ đề' if self.with_subtitles.isChecked() else 'Video')
-        if self.with_subtitles.isChecked() and not b.subtitle_language.get():self.note('Chọn ngôn ngữ phụ đề hoặc bỏ tick Tải kèm phụ đề SRT.'); return
+        b.download_mode.set('Chỉ phụ đề' if self.content_mode.currentIndex()==2 else ('Video + phụ đề' if self.with_subtitles.isChecked() else 'Video'))
+        b.output_layout.set(['separate','all','parts'][self.output_mode.currentIndex()])
+        b.group_size.set(self.group_size.value())
+        if self.with_subtitles.isChecked() and not b.subtitle_language.get():self.note('Chọn ngôn ngữ phụ đề hoặc chuyển sang Chỉ video.'); return
         if not b.folder.get().strip():self.note('Chọn thư mục lưu trước.'); return
         self.progress.setValue(0)
         b.download_workers.set(int(self.worker_count.currentText()))
@@ -676,7 +693,9 @@ class MainWindow(QMainWindow):
             self.movie_title.setText(title)
             self.movie_title.setToolTip(title)
             self.movie_title.setStyleSheet('font-size:17px;font-weight:700;' if len(title)>45 else 'font-size:23px;font-weight:700;')
-            self.movie_meta.setText(f'{len(items)} tập • {b.provider_choice.get()}')
+            available_total=max([len(items)]+[ep.get('_series_total',0) for ep in items])
+            self.movie_meta.setText(f'{len(items)}/{available_total} tập • {b.provider_choice.get()}')
+            if available_total>len(items):self.log.append(f'Nguồn chỉ trả {len(items)}/{available_total} tập. File gộp chỉ gồm các tập được cấp.')
             self.render_episodes(); self.update_path()
             self.ensure_movie_card()
             self.auto_subtitles=not b.stop.is_set()
@@ -766,9 +785,9 @@ class MainWindow(QMainWindow):
             if not url and not stop.is_set():
                 try:
                     api=API(*settings,stop)
-                    payload=(api.get('/api/dramawave/detail/'+movie['id']) if provider=='dramawave'
+                    payload=(api.get('/api/'+provider+'/detail/'+movie['id']) if provider!='netshort'
                              else api.get('/api/netshort/search',{'q':movie['title']}))
-                    rows=dramawave_rows(payload) if provider=='dramawave' else catalog_rows(payload)
+                    rows=movie_rows(payload,provider) if provider in NEW_PROVIDERS else (dramawave_rows(payload) if provider=='dramawave' else catalog_rows(payload))
                     match=next((r for r in rows if r['id']==movie['id']),None)
                     if match:metadata.update(match);url=match.get('poster')
                 except Exception:

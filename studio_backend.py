@@ -34,6 +34,8 @@ class Backend(AppLogic):
         self.download_mode, self.subtitle_language = Value('Video + phụ đề'), Value('')
         self.subtitle_results = {}
         self.download_workers = Value(3)
+        self.output_layout = Value("separate")
+        self.group_size = Value(10)
         self.tree = Selection()
 
     def start_download(self):

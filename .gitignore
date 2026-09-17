@@ -10,3 +10,6 @@ build/
 *.dist/
 *.build/
 *.zip
+
+*.private.xml
+boom_updates/

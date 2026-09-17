@@ -8,7 +8,7 @@ import tempfile
 from urllib.parse import urljoin
 
 
-def download_hls(url, destination, stop, progress):
+def download_hls(url, destination, stop, progress, referer=None):
     from netshort_tool import fetch, limited_read, ToolError, Cancelled
     ffmpeg = shutil.which('ffmpeg')
     bundled = Path(__file__).resolve().parent / 'ffmpeg.exe'
@@ -24,8 +24,10 @@ def download_hls(url, destination, stop, progress):
         raise ToolError('Video HLS cần FFmpeg. Chạy: py -m pip install imageio-ffmpeg. Hoặc đặt ffmpeg.exe cạnh tool. Vẫn có thể chọn Chỉ phụ đề.')
     if destination.exists():
         raise ToolError('File MP4 đã tồn tại.')
+    headers={}
+    if isinstance(referer,str) and referer.startswith('https://') and '\r' not in referer and '\n' not in referer:headers['Referer']=referer
     def manifest(link):
-        with fetch(link, stop=stop) as response:
+        with fetch(link, headers, stop=stop) as response:
             effective = response.geturl()
             text = limited_read(response, 2*1024*1024).decode('utf-8-sig')
         if not text.startswith('#EXTM3U'):
@@ -74,7 +76,7 @@ def download_hls(url, destination, stop, progress):
                 if stop.is_set():
                     raise Cancelled('Đã dừng tải HLS.')
                 file = folder / f'{count:05d}.bin'
-                with fetch(urljoin(base,uri),stop=stop) as response, file.open('xb') as target:
+                with fetch(urljoin(base,uri),headers,stop=stop) as response, file.open('xb') as target:
                     while True:
                         if stop.is_set():
                             raise Cancelled('Đã dừng tải HLS.')

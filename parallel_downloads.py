@@ -18,6 +18,9 @@ def start(backend):
     title=safe_name(backend.scanned_title or sid,sid)
     mode=backend.download_mode.get()
     wanted=backend.subtitle_language.get()
+    layout=backend.output_layout.get()
+    chunk=int(backend.group_size.get())
+    total_episodes=max([len(backend.items)]+[ep.get('_series_total',0) for ep in backend.items])
     workers=int(backend.download_workers.get())
     if workers not in (3,5,10):workers=3
     episodes=[(i,dict(backend.items[i])) for i in selected]
@@ -29,6 +32,7 @@ def start(backend):
         if len(set(names))!=len(names):raise engine.ToolError('Danh sách có số tập trùng nhau. Hãy chọn riêng từng tập để tải.')
         target.mkdir(parents=True,exist_ok=True)
         lock=threading.Lock()
+        records={}
         fractions={i:0.0 for i,_ in episodes}
         totals={'success':0,'failed':0,'cancelled':0}
         def progress(i,ratio):
@@ -41,11 +45,11 @@ def start(backend):
             try:
                 backend.emit('status',i,'Đang lấy nguồn…')
                 api=engine.API(base,key,language,backend.stop,provider)
-                payload={'data':ep} if provider=='dramawave' else api.get(f'/api/netshort/episodes/{sid}/{ep["id"]}/source')
+                payload={'data':ep} if provider!='netshort' else api.get(f'/api/netshort/episodes/{sid}/{ep["id"]}/source')
                 if backend.stop.is_set():raise engine.Cancelled('Đã dừng.')
                 candidates=engine.source_candidates(payload)
-                if not candidates:raise engine.ToolError('Không có source được cấp; bỏ qua.')
-                source=candidates[0]
+                if not candidates and mode!='Chỉ phụ đề':raise engine.ToolError('Nguồn chưa cấp link video cho tập này.')
+                source=candidates[0] if candidates else {}
                 backend.emit('status',i,'Đang tải…')
                 def on_progress(done,total):
                     # Reserve the last portion for subtitle writes/completion.
@@ -56,17 +60,20 @@ def start(backend):
                     backend.emit('status',i,state)
                 stem=episode_stem(title,ep,i)
                 video_path=target/(stem+'.mp4')
-                if video_path.exists():backend.emit('log',f'{stem}: video đã có, giữ file hiện tại.')
-                else:engine.download(source,video_path,backend.stop,on_progress)
+                if mode!='Chỉ phụ đề':
+                    if video_path.exists():backend.emit('log',f'{stem}: video đã có, giữ file hiện tại.')
+                    else:engine.download(source,video_path,backend.stop,on_progress)
                 if backend.stop.is_set():raise engine.Cancelled('Đã dừng.')
                 count=0
+                saved_subs={}
                 if mode!='Video':
                     chosen=[track for track in engine.subtitle_tracks(payload) if engine.language_matches(track['language'],wanted)]
                     if not chosen:backend.emit('log',f'{stem}: không có phụ đề khớp ngôn ngữ đã chọn.')
                     duplicates={}
                     for track in chosen:
                         if backend.stop.is_set():raise engine.Cancelled('Đã dừng.')
-                        tag=re.sub(r'[^A-Za-z0-9_-]','_',track['language'])[:30] or 'und'
+                        tag=('vi' if track['language'].lower().replace('_','-').split('-')[0]=='vi' else re.sub(r'[^A-Za-z0-9_-]','_',track['language'])[:30]) or 'und'
+                        if tag=='vi' and tag in saved_subs:continue
                         duplicates[tag]=duplicates.get(tag,0)+1
                         suffix='' if duplicates[tag]==1 else f'.{duplicates[tag]}'
                         sub_path=target/f'{stem}.{tag}{suffix}.srt'
@@ -76,11 +83,16 @@ def start(backend):
                                     text=engine.as_srt(engine.limited_read(response))
                                 with sub_path.open('x',encoding='utf-8-sig') as output:output.write(text)
                             count+=1
+                            saved_subs[tag+suffix]=sub_path
                         except engine.Cancelled:raise
                         except Exception as error:
                             reason=str(error) if isinstance(error,(engine.ToolError,ValueError)) else type(error).__name__
                             backend.emit('log',f'{stem}: lỗi phụ đề {tag}: {reason}')
                     backend.emit('log',f'{stem}: {count} file SRT.')
+                if mode=='Chỉ phụ đề' and not count:raise engine.ToolError('Nguồn chưa cấp SRT theo ngôn ngữ đã chọn.')
+                raw=payload.get('data',{})
+                duration=(raw.get('extra') or {}).get('duration') or raw.get('duration') or (ep.get('extra') or {}).get('duration') or ep.get('duration')
+                with lock:records[i]={'video':video_path,'subs':saved_subs,'duration':duration}
                 backend.emit('status',i,'Đã tải')
                 return 'success'
             except engine.Cancelled:
@@ -113,5 +125,9 @@ def start(backend):
                 backend.emit('batch',totals['success'],len(episodes),len(pending),totals['failed'])
         for i,_ in episodes:
             if i not in submitted:backend.emit('status',i,'Chưa tải — đã dừng')
+        if layout!='separate' and not backend.stop.is_set():
+            from boom_merge import export_groups
+            backend.emit('log','Đang gộp video/phụ đề…')
+            export_groups(records,episodes,total_episodes,title,target,mode,layout,chunk,backend.stop,backend.emit)
         backend.emit('log',f'Kết thúc: {totals["success"]} thành công, {totals["failed"]} lỗi, {len(episodes)-totals["success"]-totals["failed"]} chưa hoàn tất. Thư mục: {target}')
     backend.launch(job)
