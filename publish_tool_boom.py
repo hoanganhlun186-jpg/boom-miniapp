@@ -39,7 +39,7 @@ def info(root):
 def allowed(name):
     p=Path(name);low=name.lower()
     if any(part in ('poster_cache','__pycache__','build','.venv') for part in p.parts):return False
-    if name=='sign_release.ps1':return True  # Public signing code, never a key.
+    if name in ('sign_release.ps1','BOOM_miniapp_Setup.iss'):return True  # Public signing code, never a key.
     if any(word in low for word in ('private','secret','.env','login.dat','boom_history','server.py','boom_gateway','boom_updates','publish_boom','sign_release')):return False
     if name.startswith('.github/workflows/'):return p.suffix in ('.yml','.yaml')
     if name.startswith('icons/'):return p.suffix=='.svg'
