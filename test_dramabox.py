@@ -41,5 +41,13 @@ class DramaBoxTests(unittest.TestCase):
         self.assertEqual(parse_qs(urlsplit(request.call_args.args[1]).query),
                          {'q':['love'],'limit':['30'],'language':['vi']})
 
+    def test_live_dramabox_video_url_fields(self):
+        episode={'chapterId':'1','videoUrl':'https://example.test/default.mp4',
+                 'videoUrl540':'https://example.test/540.mp4',
+                 'videoUrl720':None,'videoUrl1080':'https://example.test/1080.mp4'}
+        sources=source_candidates({'data':episode})
+        self.assertEqual([s['quality'] for s in sources],[1080,540,0])
+        self.assertEqual(sources[0]['url'],episode['videoUrl1080'])
+
 
 if __name__=='__main__':unittest.main()

@@ -267,6 +267,10 @@ def source_candidates(payload):
             for child in node:
                 visit(child)
         elif isinstance(node, dict):
+            for field,quality in (('videoUrl',0),('videoUrl540',540),('videoUrl720',720),('videoUrl1080',1080)):
+                url=node.get(field)
+                if isinstance(url,str) and url.startswith('https://'):
+                    found.append({'url':url,'quality':quality})
             for name in ('sources', 'episodePlayList'):
                 rows = node.get(name)
                 if isinstance(rows, list):
