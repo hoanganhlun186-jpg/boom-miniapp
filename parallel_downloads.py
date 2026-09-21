@@ -3,6 +3,8 @@ from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 from pathlib import Path
 import re
 import threading
+import os
+import tempfile
 import netshort_tool as engine
 from studio_files import safe_name, episode_stem
 
@@ -40,7 +42,7 @@ def start(backend):
                 fractions[i]=max(fractions[i],min(1,max(0,ratio)))
                 backend.emit('progress',100*sum(fractions.values())/len(episodes))
 
-        def one(i,ep):
+        def one_attempt(i,ep):
             if backend.stop.is_set():return 'cancelled'
             try:
                 backend.emit('status',i,'Đang lấy nguồn…')
@@ -66,6 +68,7 @@ def start(backend):
                 if backend.stop.is_set():raise engine.Cancelled('Đã dừng.')
                 count=0
                 saved_subs={}
+                subtitle_errors=0
                 if mode!='Video':
                     chosen=[track for track in engine.subtitle_tracks(payload) if engine.language_matches(track['language'],wanted)]
                     if not chosen:backend.emit('log',f'{stem}: không có phụ đề khớp ngôn ngữ đã chọn.')
@@ -81,14 +84,22 @@ def start(backend):
                             if not sub_path.exists():
                                 with engine.fetch(track['url'],stop=backend.stop) as response:
                                     text=engine.as_srt(engine.limited_read(response))
-                                with sub_path.open('x',encoding='utf-8-sig') as output:output.write(text)
+                                with tempfile.TemporaryDirectory(prefix='boom-sub-',dir=target) as td:
+                                    staged=Path(td)/'subtitle.srt'
+                                    staged.write_text(text,encoding='utf-8-sig')
+                                    os.link(staged,sub_path)
                             count+=1
                             saved_subs[tag+suffix]=sub_path
                         except engine.Cancelled:raise
                         except Exception as error:
+                            subtitle_errors+=1
                             reason=str(error) if isinstance(error,(engine.ToolError,ValueError)) else type(error).__name__
                             backend.emit('log',f'{stem}: lỗi phụ đề {tag}: {reason}')
+                            if any(code in reason for code in ('HTTP 401','HTTP 403','HTTP 429')):
+                                backend.stop.set()
+                                raise engine.ToolError(reason)
                     backend.emit('log',f'{stem}: {count} file SRT.')
+                if subtitle_errors:raise engine.ToolError('Tải phụ đề chưa hoàn tất; sẽ thử lại tập này.')
                 if mode=='Chỉ phụ đề' and not count:raise engine.ToolError('Nguồn chưa cấp SRT theo ngôn ngữ đã chọn.')
                 raw=payload.get('data',{})
                 duration=(raw.get('extra') or {}).get('duration') or raw.get('duration') or (ep.get('extra') or {}).get('duration') or ep.get('duration')
@@ -104,6 +115,14 @@ def start(backend):
                 backend.emit('log',f'Tập {ep.get("episodeNumber") or ep.get("episodeNo") or i+1}: {message}')
                 if any(code in message for code in ('HTTP 401','HTTP 403','HTTP 429')):backend.stop.set()
                 return 'failed'
+
+        def one(i,ep):
+            for attempt in range(1,4):
+                outcome=one_attempt(i,ep)
+                if outcome!='failed' or backend.stop.is_set() or attempt==3:return outcome
+                backend.emit('status',i,f'Đang thử lại ({attempt}/2)…')
+                backend.emit('log',f'Tập {ep.get("episodeNumber") or ep.get("episodeNo") or i+1}: tải lỗi, thử lại lần {attempt}/2.')
+                if backend.stop.wait(attempt):return 'cancelled'
 
         backend.emit('log',f'Bắt đầu tải {len(episodes)} tập • tối đa {workers} tập đồng thời.')
         remaining=iter(episodes);submitted=set()

@@ -29,6 +29,9 @@ class MergeTests(unittest.TestCase):
             m.export_groups(*args,'Chỉ phụ đề','parts',2,threading.Event(),lambda *e:events.append(e))
             self.assertIn('00:00:01,100',(root/'Phim_Phần 1.vi.srt').read_text(encoding='utf-8-sig'))
             self.assertTrue((root/'Phim_Phần 2.vi.srt').exists())
+            self.assertFalse(list(root.glob('[0-9].srt')))
+            for i in range(3):
+                (root/f'{i}.srt').write_text('1\n00:00:00,100 --> 00:00:00,900\nHi\n')
             records.pop(1)
             m.export_groups(*args,'Chỉ phụ đề','all',2,threading.Event(),lambda *e:events.append(e))
             self.assertFalse((root/'Phim_Trọn bộ.vi.srt').exists())
@@ -56,8 +59,31 @@ class MergeTests(unittest.TestCase):
             with patch.object(engine,'download') as download,patch.object(engine,'fetch',side_effect=lambda *a,**k:io.BytesIO(b'1\n00:00:00,100 --> 00:00:00,900\nHi\n')):
                 b.start_download();self.assertTrue(idle.wait(5));download.assert_not_called()
             paths=list(Path(td).rglob('*.srt'))
-            self.assertEqual(len(paths),3,events)
+            self.assertEqual(len(paths),1,events)
             self.assertTrue(all(p.name.endswith('.vi.srt') for p in paths))
             self.assertFalse(list(Path(td).rglob('*.mp4')))
+
+    def test_combined_merge_cleans_only_after_complete_success(self):
+        for failure in ('none','missing','invalid','existing','video'):
+            with self.subTest(failure=failure),tempfile.TemporaryDirectory() as td:
+                root=Path(td);records={};episodes=[(0,{}),(1,{})]
+                for i in range(2):
+                    video=root/f'{i}.mp4';video.write_bytes(b'video')
+                    sub=root/f'{i}.srt';sub.write_text('1\n00:00:00,100 --> 00:00:00,900\nHi\n')
+                    records[i]={'video':video,'subs':{'vi':sub},'duration':1}
+                if failure=='missing':records[1]['subs']={}
+                if failure=='invalid':(root/'1.srt').write_text('invalid')
+                if failure=='existing':(root/'X_Trọn bộ.vi.srt').write_text('different')
+                def join(paths,durations,output,stop):
+                    if failure=='video':raise engine.ToolError('failed')
+                    output.write_bytes(b'merged')
+                with patch.object(m,'mp4_duration',return_value=1000),patch.object(m,'join_video',side_effect=join):
+                    m.export_groups(records,episodes,2,'X',root,'Video + phụ đề','all',2,threading.Event(),lambda *e:None)
+                for i in range(2):
+                    self.assertEqual((root/f'{i}.mp4').exists(),failure!='none')
+                    self.assertEqual((root/f'{i}.srt').exists(),failure!='none')
+                if failure=='none':
+                    self.assertTrue((root/'X_Trọn bộ.mp4').exists())
+                    self.assertIn('00:00:01,100',(root/'X_Trọn bộ.vi.srt').read_text(encoding='utf-8-sig'))
 
 if __name__=='__main__':unittest.main(verbosity=2)

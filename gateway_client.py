@@ -48,7 +48,12 @@ class GatewayTransport:
         match=re.fullmatch(r'/api/(netshort|dramawave|shortmax|dramabox)/(.+)',path)
         if not match:raise ToolError('Đường dẫn API không hợp lệ.')
         query=dict(params or {})
-        if self.language:query['language']=self.language
+        if match[1]=='dramabox':
+            query.pop('language',None)
+            query.pop('limit',None)
+            if 'q' in query:query['query']=query.pop('q')
+            if self.language and match[2] not in ('allepisode','languages'):query['lang']=self.language
+        elif self.language:query['language']=self.language
         target='/api/boommini/proxy/'+match[1]+'/'+match[2]
         if query:target+='?'+urlencode(query)
         return request_json(self.base,target,self.key,stop=self.stop)

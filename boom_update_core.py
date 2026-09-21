@@ -11,7 +11,7 @@ import stat
 import zipfile
 
 APP_ID='boom-miniapp-windows-x64'
-VERSION='1.0.4'
+VERSION='1.0.5'
 MAX_ZIP=1024*1024*1024
 MAX_UNPACKED=3*MAX_ZIP
 RESERVED={'boom_history.json','login.dat','poster_cache','__pycache__'}

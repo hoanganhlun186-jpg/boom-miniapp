@@ -203,9 +203,15 @@ class API(GatewayTransport):
         title = sid
         series_total=0
         for _ in range(100):
-            payload = self.get(f'/api/{self.provider}/episodes/{sid}', params)
+            payload = (self.get('/api/dramabox/allepisode', {'bookId':sid}) if self.provider=='dramabox'
+                       else self.get(f'/api/{self.provider}/episodes/{sid}', params))
             data = payload.get('data', payload)
+            if self.provider=='dramabox':
+                while isinstance(data,dict) and isinstance(data.get('data'),(dict,list)):
+                    data=data['data']
             items = data.get('items', data.get('episodes')) if isinstance(data, dict) else data
+            if self.provider=='dramabox' and isinstance(data,dict) and items is None:
+                items=data.get('chapterList')
             if not isinstance(items, list):
                 raise ToolError('Full Episodes không có data.items/data.episodes dạng danh sách.')
             if isinstance(data,dict):
@@ -218,6 +224,11 @@ class API(GatewayTransport):
             for ep in items:
                 if not isinstance(ep, dict):
                     continue
+                if self.provider=='dramabox':
+                    ep=dict(ep)
+                    ep['id']=ep.get('id') or ep.get('episodeId') or ep.get('chapterId')
+                    if not ep.get('episodeNumber') and ep.get('chapterIndex') is not None:
+                        ep['episodeNumber']=int(ep['chapterIndex'])+1
                 eid = str(ep.get('id') or ep.get('episodeId') or '')
                 if re.fullmatch(r'[A-Za-z0-9_-]{1,80}' if self.provider != 'netshort' else r'\d{1,25}', eid) and eid not in seen:
                     seen.add(eid)
@@ -229,6 +240,7 @@ class API(GatewayTransport):
                 if paging.get('hasMore') or meta.get('hasMore'):
                     raise ToolError('API báo còn trang nhưng không có nextCursor; chưa thể xác nhận đủ tập.')
                 break
+            if self.provider=='dramabox':raise ToolError('DramaBox allepisode trả phân trang ngoài cấu trúc tài liệu; cần kiểm tra phản hồi API.')
             cursor = str(cursor)
             if cursor in cursors:
                 raise ToolError('API lặp cursor phân trang; chưa thể xác nhận đủ tập.')
@@ -265,9 +277,11 @@ def source_candidates(payload):
                                 found.append(dict(row, url=url))
             if isinstance(node.get('source'), dict):
                 visit({'sources': [node['source']]})
-            for name in ('data', 'items', 'episode'):
+            for name in ('data', 'items', 'episode', 'cdnList', 'videoPathList'):
                 if name in node:
                     visit(node[name])
+            if isinstance(node.get('videoPath'),str) and node['videoPath'].startswith('https://'):
+                found.append(dict(node,url=node['videoPath']))
             if isinstance(node.get('playVoucher'), str):
                 found.append(dict(node, url=node['playVoucher']))
             elif isinstance(node.get('url'), str) and any(k in node for k in ('quality', 'type', 'referer')):

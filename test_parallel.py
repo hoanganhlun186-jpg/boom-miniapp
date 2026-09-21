@@ -1,5 +1,6 @@
 """Regression checks for bounded parallelism and cancellation."""
 import tempfile
+import io
 import threading
 import time
 import unittest
@@ -73,6 +74,42 @@ class Tests(unittest.TestCase):
             with patch.object(engine,'download') as download:
                 b.start_download();self.assertTrue(idle.wait(3));download.assert_not_called()
             self.assertTrue(any(e[0]=='error' for e in events))
+
+    def test_retry_download_then_success(self):
+        with tempfile.TemporaryDirectory() as directory:
+            b,events,idle=self.backend(directory,3,1)
+            attempts=[]
+            def download(source,path,stop,progress):
+                attempts.append(path)
+                if len(attempts)<3:raise engine.ToolError('HTTP 503')
+                path.write_bytes(b'video')
+            with patch.object(engine,'API',FakeAPI),patch.object(engine,'download',download):
+                b.start_download();self.assertTrue(idle.wait(8))
+            self.assertEqual(len(attempts),3)
+            self.assertEqual(len(list(Path(directory).rglob('*.mp4'))),1)
+            self.assertTrue(any(e[0]=='batch' and e[1]==1 and e[4]==0 for e in events))
+
+    def test_retry_exhausted_and_auth_not_retried(self):
+        for message,expected in [('HTTP 503',3),('HTTP 403',1)]:
+            with self.subTest(message=message),tempfile.TemporaryDirectory() as directory:
+                b,events,idle=self.backend(directory,3,1)
+                with patch.object(engine,'API',FakeAPI),patch.object(engine,'download',side_effect=engine.ToolError(message)) as download:
+                    b.start_download();self.assertTrue(idle.wait(8))
+                self.assertEqual(download.call_count,expected)
+                self.assertTrue(any(e[0]=='batch' and e[4]==1 for e in events))
+
+    def test_subtitle_retry_reuses_completed_video(self):
+        with tempfile.TemporaryDirectory() as directory:
+            b,events,idle=self.backend(directory,3,1)
+            b.scanned_provider='dramawave';b.download_mode.set('Video + phụ đề');b.subtitle_language.set('vi')
+            b.items[0].update(sources=[{'type':'mp4','url':'https://example.test/a.mp4'}],
+                              subtitles=[{'language':'vi','url':'https://example.test/a.srt'}])
+            def download(source,path,stop,progress):path.write_bytes(b'video')
+            with patch.object(engine,'download',side_effect=download) as downloads,patch.object(engine,'fetch',side_effect=[engine.ToolError('HTTP 503'),io.BytesIO(b'1\n00:00:00,100 --> 00:00:00,900\nHi\n')]) as fetch:
+                b.start_download();self.assertTrue(idle.wait(5))
+            self.assertEqual(downloads.call_count,1)
+            self.assertEqual(fetch.call_count,2)
+            self.assertEqual(len(list(Path(directory).rglob('*.srt'))),1)
 
 
 if __name__=='__main__':unittest.main(verbosity=2)

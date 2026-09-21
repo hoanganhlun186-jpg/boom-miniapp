@@ -25,7 +25,7 @@ class ProviderTests(unittest.TestCase):
             with patch.object(gateway_client,'request_json',return_value={}) as request:
                 api=engine.API('https://example.test','fixture','vi',threading.Event(),provider)
                 api.get(f'/api/{provider}/home')
-                self.assertIn('/proxy/'+provider+'/home?language=vi',request.call_args.args[1])
+                self.assertIn('/proxy/'+provider+'/home?'+('lang' if provider=='dramabox' else 'language')+'=vi',request.call_args.args[1])
             self.assertEqual(series_id('12345',provider),'12345')
             self.assertIsNone(series_id('https://evil.test/drama/12345',provider))
         self.assertEqual(series_id('https://www.dramabox.com/drama/42000003101-title','dramabox'),'42000003101')

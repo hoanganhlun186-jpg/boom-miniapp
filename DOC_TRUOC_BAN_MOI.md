@@ -13,7 +13,9 @@ Giải nén vào thư mục mới. Chạy CAI_DAT.bat để cài PyQt6, Pillow v
 
 Ví dụ: Tên phim_tập 1.vi.srt; Tên phim_Trọn bộ.vi.srt; Tên phim_Phần 1.vi.srt. Tiếng Việt luôn dùng .vi.srt.
 
-Gộp áp dụng cho các tập đã chọn, sắp theo số tập. Nếu chọn một phần danh sách, file gộp mang tên Các tập đã chọn. Chia phần chia danh sách đã chọn theo số tập mỗi phần. Các tập rời được giữ lại.
+Gộp áp dụng cho các tập đã chọn, sắp theo số tập. Nếu chọn một phần danh sách, file gộp mang tên Các tập đã chọn. Chia phần chia danh sách đã chọn theo số tập mỗi phần. Khi video và toàn bộ SRT đã chọn được gộp thành công, các file lẻ tương ứng trong nhóm được xóa. Nếu thiếu hoặc lỗi SRT/video, giữ file lẻ.
+
+Tập tải lỗi được tự động thử lại tối đa 2 lần (tổng 3 lượt), bao gồm lỗi tải SRT; file đã tải thành công được dùng lại. Chờ 1 rồi 2 giây giữa các lần thử, có thể dừng ngay. HTTP 401/403/429 dừng lượt tải để tránh tiếp tục gửi yêu cầu bị từ chối.
 
 SRT gộp cộng thời lượng từng MP4; khi Chỉ SRT và không có MP4, dùng duration (giây) từ dữ liệu nguồn. Nếu thiếu thời lượng, thiếu tập tải thành công hoặc thiếu phụ đề cùng ngôn ngữ, app báo trong nhật ký và giữ file rời. Không tự suy ra thời lượng từ câu phụ đề cuối. Nguồn không cấp video/SRT thì app không tải được nội dung đó.
 

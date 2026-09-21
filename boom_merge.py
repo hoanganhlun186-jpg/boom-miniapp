@@ -101,25 +101,43 @@ def export_groups(records,episodes,total,title,target,mode,layout,chunk,stop,emi
                 if r['video'].exists():duration=mp4_duration(r['video'])
                 else:
                     raw=r.get('duration')
+                    if isinstance(raw,str):
+                        try:raw=float(raw)
+                        except ValueError:pass
                     if isinstance(raw,bool) or not isinstance(raw,(int,float)) or not math.isfinite(raw) or raw<=0:raise ToolError('Thiếu thời lượng tập để căn SRT. Các file SRT rời được giữ.')
                     duration=round(raw*1000)
                 durations.append(duration)
             stem=title+'_'+label
+            subtitles=[]
+            if mode!='Video':
+                tags=set().union(*(r['subs'] for r in data))
+                if not tags:raise ToolError('Không có SRT để gộp; giữ file rời.')
+                for tag in sorted(tags):
+                    if any(tag not in r['subs'] for r in data):raise ToolError(f'Thiếu SRT {tag} ở một số tập; giữ file rời.')
+                    merged=merge_srt([r['subs'][tag] for r in data],durations)
+                    destination=target/(stem+'.'+tag+'.srt')
+                    if destination.exists() and destination.read_text(encoding='utf-8-sig')!=merged:
+                        raise ToolError(f'SRT gộp đã có nhưng nội dung không khớp: {destination.name}; giữ file rời.')
+                    subtitles.append((destination,merged))
             if mode!='Chỉ phụ đề':
                 video_output=target/(stem+'.mp4')
                 if video_output.exists():
                     if abs(mp4_duration(video_output)-sum(durations))>250:raise ToolError('Video gộp đã có nhưng thời lượng không khớp; chưa gộp SRT.')
                     emit('log','Giữ file đã có: '+video_output.name)
                 else:join_video([r['video'] for r in data],durations,video_output,stop)
-            if mode!='Video':
-                tags=set().union(*(r['subs'] for r in data))
-                for tag in sorted(tags):
-                    if stop.is_set():raise Cancelled('Đã dừng gộp.')
-                    if any(tag not in r['subs'] for r in data):emit('log',f'{label}: thiếu SRT {tag} ở một số tập, giữ file rời.');continue
-                    merged=merge_srt([r['subs'][tag] for r in data],durations)
-                    destination=target/(stem+'.'+tag+'.srt')
-                    if destination.exists():emit('log',f'Giữ file đã có: {destination.name}');continue
-                    with destination.open('x',encoding='utf-8-sig') as output:output.write(merged)
-            emit('log','Đã xử lý gộp: '+label)
+            for destination,merged in subtitles:
+                if stop.is_set():raise Cancelled('Đã dừng gộp.')
+                if destination.exists():continue
+                with tempfile.TemporaryDirectory(prefix='boom-srt-',dir=target) as td:
+                    staged=Path(td)/'merged.srt'
+                    staged.write_text(merged,encoding='utf-8-sig')
+                    os.link(staged,destination)
+            if stop.is_set():raise Cancelled('Đã dừng gộp.')
+            sources=set()
+            for r in data:
+                if mode!='Chỉ phụ đề':sources.add(r['video'])
+                if mode!='Video':sources.update(r['subs'].values())
+            for path in sources:path.unlink(missing_ok=True)
+            emit('log','Đã gộp và xóa file lẻ: '+label)
         except Cancelled:raise
         except (ToolError,ValueError,OSError,struct.error) as error:emit('log',f'{label}: {error}')

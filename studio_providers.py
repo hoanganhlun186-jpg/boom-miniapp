@@ -7,6 +7,7 @@ NEW_PROVIDERS=('shortmax','dramabox')
 
 def catalog_endpoint(provider,action):
     if provider=='dramawave':return 'search' if action=='search' else 'search/hot-list'
+    if provider=='dramabox':return 'search' if action=='search' else 'foryou'
     if provider in NEW_PROVIDERS:return 'search' if action=='search' else 'home'
     return action
 
