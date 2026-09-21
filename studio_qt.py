@@ -1,4 +1,4 @@
-from studio_providers import NAMES, LANGUAGES, NEW_PROVIDERS, catalog_endpoint, movie_rows
+from studio_providers import NAMES, LANGUAGES, NEW_PROVIDERS, catalog_endpoint, movie_rows, match_movie_titles
 from datetime import datetime
 import time
 """Modern Qt presentation; networking and media logic stay in original modules."""
@@ -497,7 +497,14 @@ class MainWindow(QMainWindow):
                 elif provider=='dramawave':rows=dramawave_rows(payload)
                 else:rows=movie_rows(payload,provider)
                 nxt=next_cursor(payload)
+                fallback=False
+                if provider=='shortmax' and action=='search' and query and not cursor and not rows and not nxt:
+                    fallback=True
+                    home=api.get('/api/shortmax/home',{'limit':30})
+                    rows=match_movie_titles(movie_rows(home,provider),query)
                 self.events.event.emit(('catalog',generation,rows,nxt if nxt!=cursor else None))
+                if fallback:
+                    self.events.event.emit(('catalog_note',generation,f'Tìm thấy {len(rows)} phim trong danh sách Đề xuất. Tìm kiếm ShortMax không trả kết quả; danh sách này không bao gồm toàn bộ kho phim.'))
                 groups={}
                 for movie in rows:
                     url=movie.get('poster')
@@ -682,7 +689,7 @@ class MainWindow(QMainWindow):
                         card.poster.setText('Chưa tải được ảnh\nBấm Đề xuất để thử lại')
                         card.poster.setToolTip('Lỗi tải poster: '+reason)
                 self.log.append('Một số poster tải thất bại ('+reason+'). Có thể tải lại thư viện.')
-            elif kind=='catalog_error':self.library_info.setText(args[1])
+            elif kind in ('catalog_error','catalog_note'):self.library_info.setText(args[1])
             elif kind=='catalog_idle':self.catalog_busy=False; self.more.setEnabled(bool(self.cursor))
             return
         if kind=='episodes':

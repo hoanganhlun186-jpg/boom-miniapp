@@ -1,9 +1,18 @@
 """Provider names and catalog normalization from Ezvid responses."""
 import re
+import unicodedata
 from urllib.parse import urlsplit, parse_qs
 NAMES={'netshort':'NetShort','dramawave':'DramaWave','shortmax':'ShortMax','dramabox':'DramaBox'}
 LANGUAGES={'netshort':'vi_VN','dramawave':'vi-VN','shortmax':'vi','dramabox':'vi'}
 NEW_PROVIDERS=('shortmax','dramabox')
+
+def match_movie_titles(rows,query):
+    def normalize(value):
+        value=unicodedata.normalize('NFD',value.casefold().replace('đ','d'))
+        value=''.join(c for c in value if not unicodedata.combining(c))
+        return ' '.join(re.findall(r'\w+',value))
+    needle=normalize(query)
+    return [row for row in rows if needle and needle in normalize(row['title'])]
 
 def catalog_endpoint(provider,action):
     if provider=='dramawave':return 'search' if action=='search' else 'search/hot-list'
@@ -21,6 +30,9 @@ def series_id(value,provider):
     for key in ('shortPlayCode','bookId','dramaId','id'):
         candidate=q.get(key,[''])[0]
         if re.fullmatch(r'\d{1,25}',candidate):return candidate
+    if provider=='shortmax':
+        match=re.fullmatch(r'/(?:[A-Za-z]{2}(?:-[A-Za-z]{2})?/)?episodes/[^/]+-(\d{1,25})/?',p.path)
+        if match:return match[1]
     # Only explicit series/detail URLs; never mistake an episode number for a series.
     match=re.search(r'/(?:drama|book|detail|short-play)/[^/?]*?(\d{5,25})(?:[-/]|$)',p.path)
     return match[1] if match else None
