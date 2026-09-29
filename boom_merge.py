@@ -1,5 +1,6 @@
 """Episode grouping, MP4 durations and synchronized SRT output."""
 import os,re,shutil,struct,subprocess,tempfile,math
+from collections import Counter,namedtuple
 from pathlib import Path
 from netshort_tool import ToolError,Cancelled
 
@@ -59,24 +60,109 @@ def ffmpeg():
         return imageio_ffmpeg.get_ffmpeg_exe()
     except Exception:raise ToolError('Cần FFmpeg để gộp video.')
 
+MediaSignature=namedtuple('MediaSignature','vcodec pix_fmt width height fps time_base acodec sample_rate channels')
+
+def _rate(value):
+    value=value.lower()
+    return round(float(value[:-1])*1000) if value.endswith('k') else round(float(value))
+
+def _parse_media_signature(text):
+    video=next((line for line in text.splitlines() if 'Stream #' in line and ': Video:' in line and 'attached pic' not in line),None)
+    if not video:raise ToolError('Không đọc được thông số video; giữ tập rời.')
+    details=re.search(r'Video:\s*([^,\s]+)[^,]*,\s*([^,\s(]+)(?:\([^)]*\))?,\s*(\d{2,5})x(\d{2,5})',video)
+    fps=re.search(r',\s*([0-9.]+)\s+fps',video)
+    time_base=re.search(r',\s*([0-9.]+k?)\s+tbn',video,re.I)
+    if not (details and fps and time_base):raise ToolError('Thông số FPS/time base không hợp lệ; giữ tập rời.')
+    audio=next((line for line in text.splitlines() if 'Stream #' in line and ': Audio:' in line),None)
+    acodec='';sample_rate=0;channels=''
+    if audio:
+        audio_details=re.search(r'Audio:\s*([^,\s]+)[^,]*,\s*(\d+)\s+Hz,\s*([^,]+)',audio)
+        if not audio_details:raise ToolError('Không đọc được thông số âm thanh; giữ tập rời.')
+        acodec=audio_details[1].lower();sample_rate=int(audio_details[2]);channels=audio_details[3].strip().lower()
+    return MediaSignature(details[1].lower(),details[2].lower(),int(details[3]),int(details[4]),float(fps[1]),_rate(time_base[1]),acodec,sample_rate,channels)
+
+def _probe_media(path,stop):
+    if stop.is_set():raise Cancelled('Đã dừng gộp.')
+    completed=subprocess.run([ffmpeg(),'-nostdin','-hide_banner','-i',str(path)],stdout=subprocess.DEVNULL,stderr=subprocess.PIPE,creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
+    if stop.is_set():raise Cancelled('Đã dừng gộp.')
+    return _parse_media_signature(completed.stderr.decode('utf-8',errors='replace'))
+
+def _channel_count(label):
+    if label=='mono':return 1
+    if label=='stereo':return 2
+    match=re.match(r'(\d+)\.(\d+)',label)
+    return sum(map(int,match.groups())) if match else None
+
+def _prepare_video(source,signature,target,destination,stop):
+    video_encode=signature[:5]!=target[:5]
+    audio_encode=signature[6:]!=target[6:]
+    command=[ffmpeg(),'-nostdin','-v','error','-fflags','+genpts','-i',str(source),'-map','0:v:0']
+    if target.acodec:command+=['-map','0:a:0']
+    else:command+=['-an']
+    if video_encode:
+        command+=['-vf',f'scale={target.width}:{target.height},fps={target.fps:g}','-c:v','libx264','-preset','veryfast','-crf','21','-pix_fmt','yuv420p','-fps_mode','cfr']
+    else:command+=['-c:v','copy']
+    command+=['-video_track_timescale',str(target.time_base)]
+    if target.acodec:
+        if audio_encode:
+            command+=['-c:a','aac','-b:a','128k','-ar',str(target.sample_rate),'-af','aresample=async=1:first_pts=0']
+            channels=_channel_count(target.channels)
+            if channels:command+=['-ac',str(channels)]
+        else:command+=['-c:a','copy']
+    command+=['-avoid_negative_ts','make_zero','-movflags','+faststart',str(destination)]
+    with destination.with_suffix('.log').open('wb') as log:
+        process=subprocess.Popen(command,stdout=subprocess.DEVNULL,stderr=log,creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
+        try:
+            while process.poll() is None:
+                if stop.wait(.15):raise Cancelled('Đã dừng gộp.')
+            if process.returncode:raise ToolError('Không chuẩn hóa được một tập. File tập rời vẫn được giữ.')
+        finally:
+            if process.poll() is None:process.terminate();process.wait()
+
 def join_video(paths,durations,output,stop):
     if stop.is_set():raise Cancelled('Đã dừng gộp.')
     if not paths or len(paths)!=len(durations):raise ToolError('Danh sách tập và thời lượng không khớp.')
     if output.exists():raise ToolError('File gộp đã tồn tại, giữ nguyên: '+output.name)
     with tempfile.TemporaryDirectory(prefix='boom-merge-',dir=output.parent) as td:
-        temp=Path(td);listing=temp/'concat.txt'
+        temp=Path(td)
+        signatures=[_probe_media(path,stop) for path in paths]
+        target=Counter(signatures).most_common(1)[0][0]
+        # Telegram/mobile compatibility requires H.264 4:2:0 and AAC. If the
+        # common source profile is already safe, preserve it and repair only the
+        # outliers. Otherwise normalize the whole group to a conservative profile.
+        if target.vcodec!='h264' or not target.pix_fmt.startswith('yuv420p') or target.acodec not in ('','aac'):
+            dimensions=Counter((item.width,item.height) for item in signatures).most_common(1)[0][0]
+            has_audio=any(item.acodec for item in signatures)
+            target=MediaSignature('h264','yuv420p',*dimensions,30.0,90000,'aac' if has_audio else '',48000 if has_audio else 0,'stereo' if has_audio else '')
+        prepared=[]
+        for index,(path,signature) in enumerate(zip(paths,signatures),1):
+            if signature==target:
+                prepared.append(path)
+                continue
+            normalized=temp/f'normalized-{index:04}.mp4'
+            _prepare_video(path,signature,target,normalized,stop)
+            if _probe_media(normalized,stop)!=target:raise ToolError('Tập sau khi chuẩn hóa vẫn khác thông số; giữ tập rời.')
+            prepared.append(normalized)
+        listing=temp/'concat.txt'
         lines=['ffconcat version 1.0']
-        for p,d in zip(paths,durations):
+        for p,d in zip(prepared,durations):
             escaped=p.resolve().as_posix().replace("'","'\\''")
             lines.extend(["file '"+escaped+"'",f'duration {d/1000:.6f}'])
         listing.write_text('\n'.join(lines)+'\n',encoding='utf-8')
         result=temp/'merged.mp4'
         with (temp/'ffmpeg.log').open('wb') as log:
-            process=subprocess.Popen([ffmpeg(),'-nostdin','-v','error','-f','concat','-safe','0','-i',str(listing),'-map','0:v:0','-map','0:a?','-c','copy','-movflags','+faststart',str(result)],stdout=subprocess.DEVNULL,stderr=log,creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
+            command=[
+                ffmpeg(),'-nostdin','-v','error',
+                '-f','concat','-safe','0','-i',str(listing),
+                '-map','0:v:0','-map','0:a?',
+                '-c','copy','-video_track_timescale',str(target.time_base),
+                '-movflags','+faststart',str(result),
+            ]
+            process=subprocess.Popen(command,stdout=subprocess.DEVNULL,stderr=log,creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
             try:
                 while process.poll() is None:
                     if stop.wait(.15):raise Cancelled('Đã dừng gộp.')
-                if process.returncode:raise ToolError('Không gộp được video; các tập có thể khác định dạng. File tập rời vẫn được giữ.')
+                if process.returncode:raise ToolError('Không gộp được video sau khi chuẩn hóa. File tập rời vẫn được giữ.')
             finally:
                 if process.poll() is None:process.terminate();process.wait()
         if stop.is_set():raise Cancelled('Đã dừng gộp.')

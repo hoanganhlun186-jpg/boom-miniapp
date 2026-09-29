@@ -9,6 +9,62 @@ import netshort_tool as engine
 import test_parallel
 
 class MergeTests(unittest.TestCase):
+    def test_signature_parser_reads_losslesscut_mismatch_fields(self):
+        text='''
+  Stream #0:0[0x1](und): Video: h264 (High) (avc1 / 0x31637661), yuv420p(progressive), 720x1280, 2500 kb/s, 24 fps, 24 tbr, 12288 tbn (default)
+  Stream #0:1[0x2](und): Audio: aac (LC) (mp4a / 0x6134706D), 48000 Hz, stereo, fltp, 128 kb/s (default)
+'''
+        self.assertEqual(m._parse_media_signature(text),m.MediaSignature('h264','yuv420p',720,1280,24.0,12288,'aac',48000,'stereo'))
+
+    def test_join_video_normalizes_only_outlier_then_stream_copies(self):
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td);inputs=[]
+            for name in ('30fps-a.mp4','24fps.mp4','30fps-b.mp4'):
+                path=root/name;path.write_bytes(b'input');inputs.append(path)
+            output=root/'joined.mp4'
+            commands=[]
+            class Process:
+                returncode=0
+                def poll(self):return self.returncode
+                def terminate(self):self.returncode=1
+                def wait(self):return self.returncode
+            def popen(command,**kwargs):
+                commands.append(command)
+                Path(command[-1]).write_bytes(b'normalized')
+                return Process()
+            common=m.MediaSignature('h264','yuv420p',720,1280,30.0,15360,'aac',48000,'stereo')
+            outlier=m.MediaSignature('h264','yuv420p',720,1280,24.0,12288,'aac',48000,'stereo')
+            def probe(path,stop):return outlier if Path(path).name=='24fps.mp4' else common
+            with patch.object(m,'ffmpeg',return_value='ffmpeg'),patch.object(m.subprocess,'Popen',side_effect=popen),patch.object(m,'_probe_media',side_effect=probe),patch.object(m,'mp4_duration',return_value=3000):
+                m.join_video(inputs,[1000,1000,1000],output,threading.Event())
+            self.assertEqual(len(commands),2)
+            normalize,join=commands
+            self.assertEqual(normalize[normalize.index('-c:v')+1],'libx264')
+            self.assertEqual(normalize[normalize.index('-vf')+1],'scale=720:1280,fps=30')
+            self.assertEqual(normalize[normalize.index('-video_track_timescale')+1],'15360')
+            self.assertEqual(join[join.index('-c')+1],'copy')
+            self.assertTrue(output.exists())
+
+    def test_time_base_only_mismatch_is_remuxed_without_video_encode(self):
+        common=m.MediaSignature('h264','yuv420p',720,1280,30.0,15360,'aac',48000,'stereo')
+        outlier=common._replace(time_base=12288)
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td);source=root/'source.mp4';destination=root/'fixed.mp4';source.write_bytes(b'input')
+            commands=[]
+            class Process:
+                returncode=0
+                def poll(self):return self.returncode
+                def terminate(self):self.returncode=1
+                def wait(self):return self.returncode
+            def popen(command,**kwargs):
+                commands.append(command);destination.write_bytes(b'remuxed');return Process()
+            with patch.object(m,'ffmpeg',return_value='ffmpeg'),patch.object(m.subprocess,'Popen',side_effect=popen):
+                m._prepare_video(source,outlier,common,destination,threading.Event())
+            command=commands[0]
+            self.assertEqual(command[command.index('-c:v')+1],'copy')
+            self.assertNotIn('libx264',command)
+            self.assertEqual(command[command.index('-video_track_timescale')+1],'15360')
+
     def test_offsets_and_invalid_inputs(self):
         with tempfile.TemporaryDirectory() as td:
             p=Path(td)/'a.srt';p.write_text('1\n00:00:00,100 --> 00:00:00,900\nXin chào\n',encoding='utf-8')

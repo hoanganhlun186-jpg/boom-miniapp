@@ -146,7 +146,7 @@ def start(backend):
             if i not in submitted:backend.emit('status',i,'Chưa tải — đã dừng')
         if layout!='separate' and not backend.stop.is_set():
             from boom_merge import export_groups
-            backend.emit('log','Đang gộp video/phụ đề…')
+            backend.emit('log','Đang quét thông số và gộp video/phụ đề… Chỉ các tập lệch chuẩn mới được xử lý lại.')
             export_groups(records,episodes,total_episodes,title,target,mode,layout,chunk,backend.stop,backend.emit)
         backend.emit('log',f'Kết thúc: {totals["success"]} thành công, {totals["failed"]} lỗi, {len(episodes)-totals["success"]-totals["failed"]} chưa hoàn tất. Thư mục: {target}')
     backend.launch(job)
