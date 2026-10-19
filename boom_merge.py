@@ -4,6 +4,8 @@ from collections import Counter,namedtuple
 from pathlib import Path
 from netshort_tool import ToolError,Cancelled
 
+SRT_END_TOLERANCE_MS=2000
+
 def mp4_duration(path):
     with Path(path).open('rb') as f:
         end=f.seek(0,2);f.seek(0)
@@ -44,7 +46,14 @@ def merge_srt(paths,durations):
             match=re.search(r'(\d{2,}:\d{2}:\d{2},\d{3})\s+-->\s+(\d{2,}:\d{2}:\d{2},\d{3})[^\n]*\n([\s\S]+)',block)
             if not match:raise ToolError('SRT không hợp lệ; giữ các file tập rời.')
             start,end=parse(match[1]),parse(match[2]);found=True
-            if not (0<=start<min(end,duration) and end<=duration+100):raise ToolError('Thời gian SRT vượt video; chưa gộp để tránh lệch phụ đề.')
+            if not 0<=start<end:raise ToolError('Mốc thời gian SRT không hợp lệ; giữ các file tập rời.')
+            # Providers commonly let the final cue extend slightly beyond the
+            # actual MP4 duration. Only trim a small overrun; a larger difference
+            # can indicate genuinely mismatched subtitles and must stay visible.
+            if start>=duration:
+                raise ToolError(f'{Path(path).name}: SRT bắt đầu sau cuối video {start-duration} ms; giữ SRT tập rời để kiểm tra.')
+            if end-duration>SRT_END_TOLERANCE_MS:
+                raise ToolError(f'{Path(path).name}: SRT dài hơn video {end-duration} ms; giữ SRT tập rời để kiểm tra.')
             cues.append(f'{len(cues)+1}\n{stamp(offset+start)} --> {stamp(offset+min(end,duration))}\n{match[3]}')
         if not found:raise ToolError('SRT rỗng; chưa gộp.')
         offset+=duration
@@ -93,6 +102,11 @@ def _channel_count(label):
     match=re.match(r'(\d+)\.(\d+)',label)
     return sum(map(int,match.groups())) if match else None
 
+def _concat_compatible(signature,target):
+    # Every stream characteristic, including FPS and MP4 time base, must match so
+    # the final stream is CFR and predictable for Telegram/mobile decoders.
+    return signature==target
+
 def _prepare_video(source,signature,target,destination,stop):
     video_encode=signature[:5]!=target[:5]
     audio_encode=signature[6:]!=target[6:]
@@ -119,13 +133,14 @@ def _prepare_video(source,signature,target,destination,stop):
         finally:
             if process.poll() is None:process.terminate();process.wait()
 
-def join_video(paths,durations,output,stop):
+def join_video(paths,durations,output,stop,emit=None):
     if stop.is_set():raise Cancelled('Đã dừng gộp.')
     if not paths or len(paths)!=len(durations):raise ToolError('Danh sách tập và thời lượng không khớp.')
     if output.exists():raise ToolError('File gộp đã tồn tại, giữ nguyên: '+output.name)
     with tempfile.TemporaryDirectory(prefix='boom-merge-',dir=output.parent) as td:
         temp=Path(td)
         signatures=[_probe_media(path,stop) for path in paths]
+        if emit:emit('log',f'Đã quét {len(paths)} tập; đang đối chiếu thông số ghép.')
         target=Counter(signatures).most_common(1)[0][0]
         # Telegram/mobile compatibility requires H.264 4:2:0 and AAC. If the
         # common source profile is already safe, preserve it and repair only the
@@ -134,15 +149,22 @@ def join_video(paths,durations,output,stop):
             dimensions=Counter((item.width,item.height) for item in signatures).most_common(1)[0][0]
             has_audio=any(item.acodec for item in signatures)
             target=MediaSignature('h264','yuv420p',*dimensions,30.0,90000,'aac' if has_audio else '',48000 if has_audio else 0,'stereo' if has_audio else '')
-        prepared=[]
+        prepared=[];encoded=remuxed=0
         for index,(path,signature) in enumerate(zip(paths,signatures),1):
-            if signature==target:
+            if _concat_compatible(signature,target):
                 prepared.append(path)
                 continue
             normalized=temp/f'normalized-{index:04}.mp4'
+            if signature[:5]!=target[:5]:
+                encoded+=1
+                if emit:emit('log',f'Tập {index}: khác FPS/codec/khung hình, đang mã hóa lại…')
+            else:
+                remuxed+=1
+                if emit:emit('log',f'Tập {index}: chỉ lệch time base/âm thanh, đang chuẩn hóa nhanh…')
             _prepare_video(path,signature,target,normalized,stop)
-            if _probe_media(normalized,stop)!=target:raise ToolError('Tập sau khi chuẩn hóa vẫn khác thông số; giữ tập rời.')
+            if not _concat_compatible(_probe_media(normalized,stop),target):raise ToolError('Tập sau khi chuẩn hóa vẫn khác thông số; giữ tập rời.')
             prepared.append(normalized)
+        if emit:emit('log',f'Chuẩn bị ghép: {encoded} tập mã hóa lại, {remuxed} tập chuẩn hóa nhanh, {len(paths)-encoded-remuxed} tập giữ nguyên.')
         listing=temp/'concat.txt'
         lines=['ffconcat version 1.0']
         for p,d in zip(prepared,durations):
@@ -194,23 +216,30 @@ def export_groups(records,episodes,total,title,target,mode,layout,chunk,stop,emi
                     duration=round(raw*1000)
                 durations.append(duration)
             stem=title+'_'+label
-            subtitles=[]
+            subtitles=[];subtitle_error=None
             if mode!='Video':
-                tags=set().union(*(r['subs'] for r in data))
-                if not tags:raise ToolError('Không có SRT để gộp; giữ file rời.')
-                for tag in sorted(tags):
-                    if any(tag not in r['subs'] for r in data):raise ToolError(f'Thiếu SRT {tag} ở một số tập; giữ file rời.')
-                    merged=merge_srt([r['subs'][tag] for r in data],durations)
-                    destination=target/(stem+'.'+tag+'.srt')
-                    if destination.exists() and destination.read_text(encoding='utf-8-sig')!=merged:
-                        raise ToolError(f'SRT gộp đã có nhưng nội dung không khớp: {destination.name}; giữ file rời.')
-                    subtitles.append((destination,merged))
+                try:
+                    tags=set().union(*(r['subs'] for r in data))
+                    if not tags:raise ToolError('Không có SRT để gộp.')
+                    for tag in sorted(tags):
+                        if any(tag not in r['subs'] for r in data):raise ToolError(f'Thiếu SRT {tag} ở một số tập.')
+                        merged=merge_srt([r['subs'][tag] for r in data],durations)
+                        destination=target/(stem+'.'+tag+'.srt')
+                        if destination.exists() and destination.read_text(encoding='utf-8-sig')!=merged:
+                            raise ToolError(f'SRT gộp đã có nhưng nội dung không khớp: {destination.name}.')
+                        subtitles.append((destination,merged))
+                except (ToolError,ValueError,OSError) as error:
+                    subtitle_error=error;subtitles=[]
             if mode!='Chỉ phụ đề':
                 video_output=target/(stem+'.mp4')
                 if video_output.exists():
                     if abs(mp4_duration(video_output)-sum(durations))>250:raise ToolError('Video gộp đã có nhưng thời lượng không khớp; chưa gộp SRT.')
                     emit('log','Giữ file đã có: '+video_output.name)
-                else:join_video([r['video'] for r in data],durations,video_output,stop)
+                else:join_video([r['video'] for r in data],durations,video_output,stop,emit)
+            if subtitle_error:
+                prefix='Video đã gộp nhưng SRT không gộp' if mode!='Chỉ phụ đề' else 'SRT không gộp'
+                emit('log',f'{label}: {prefix}: {subtitle_error} Toàn bộ file lẻ được giữ nguyên.')
+                continue
             for destination,merged in subtitles:
                 if stop.is_set():raise Cancelled('Đã dừng gộp.')
                 if destination.exists():continue

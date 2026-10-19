@@ -8,6 +8,22 @@ from test_studio import APP,wait_until
 from studio_qt import MainWindow
 
 class ProviderTests(unittest.TestCase):
+    def test_netshort_source_uses_episode_id_and_retries_transient_failure(self):
+        class Stop:
+            def __init__(self):self.waits=[]
+            def wait(self,seconds):self.waits.append(seconds);return False
+        class API:
+            def __init__(self):self.stop=Stop();self.paths=[]
+            def get(self,path):
+                self.paths.append(path)
+                if len(self.paths)==1:raise engine.ToolError('HTTP 502: upstream returned HTTP 429')
+                return {'data':{'episodePlayList':[{'playVoucher':'https://example.test/video.mp4'}]}}
+        api=API()
+        payload=engine.netshort_episode_source(api,'2110211347725803522','2110266601192480777')
+        self.assertEqual(api.paths, ['/api/netshort/episodes/2110211347725803522/2110266601192480777/source']*2)
+        self.assertTrue(engine.source_candidates(payload))
+        self.assertTrue(any(delay >= .75 for delay in api.stop.waits))
+
     def test_catalog_raw_and_normalized(self):
         raw={'data':{'tabPageResponse':{'bannerResponseList':[{'bannerId':14,'title':'Popular','shortPlayResponseList':[{'shortPlayCode':864283,'id':34949,'shortPlayName':'Phim','picUrl':'https://example.test/p.jpg','totalEpisodes':125}]}]}}}
         rows=movie_rows(raw,'shortmax');self.assertEqual([r['id'] for r in rows],['864283'])

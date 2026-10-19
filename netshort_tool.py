@@ -11,6 +11,7 @@ from pathlib import Path
 import queue
 import re
 import threading
+import time
 import tkinter as tk
 from netshort_subtitles import tracks as subtitle_tracks, as_srt, language_matches
 from studio_files import safe_name, episode_stem
@@ -258,6 +259,36 @@ class API(GatewayTransport):
         return str(title), result
 
 
+_NETSHORT_SOURCE_LOCK = threading.Lock()
+_NETSHORT_SOURCE_NEXT_REQUEST = [0.0]
+
+
+def netshort_episode_source(api, sid, episode_id, attempts=3):
+    """Resolve one fresh NetShort source without flooding the upstream service."""
+    path = f'/api/netshort/episodes/{sid}/{episode_id}/source'
+    stop = getattr(api, 'stop', None)
+    # Reserve staggered start times, but do not hold the lock during network I/O:
+    # video downloads remain concurrent and a slow request cannot block all others.
+    for attempt in range(1, attempts + 1):
+        if stop is not None:
+            with _NETSHORT_SOURCE_LOCK:
+                now = time.monotonic()
+                scheduled = max(now, _NETSHORT_SOURCE_NEXT_REQUEST[0])
+                _NETSHORT_SOURCE_NEXT_REQUEST[0] = scheduled + 0.35
+            if stop.wait(max(0.0, scheduled - now)):
+                raise Cancelled('Đã dừng.')
+        try:
+            return api.get(path)
+        except ToolError as error:
+            message = str(error).casefold()
+            # Retry only an explicit upstream rate limit. Other failures remain
+            # under the existing per-episode retry policy.
+            if attempt == attempts or ('429' not in message and 'rate limit' not in message):
+                raise
+            if stop is not None and stop.wait(0.75 * attempt):
+                raise Cancelled('Đã dừng.')
+
+
 
 def source_candidates(payload):
     """Support both normalized Ezvid sources and raw NetShort play lists."""
@@ -496,7 +527,7 @@ class AppLogic:
                     break
                 self.emit('status',i,'Đang kiểm tra phụ đề…')
                 try:
-                    payload = api.get(f'/api/netshort/episodes/{sid}/{eid}/source')
+                    payload = netshort_episode_source(api, sid, eid)
                     found = subtitle_tracks(payload)
                     result[i] = found
                     self.emit('status',i,f'{len({t["language"] for t in found})} ngôn ngữ phụ đề')
@@ -657,7 +688,7 @@ class AppLogic:
                 eid = ep['id']
                 self.emit('status', i, 'Đang lấy Episode Source…')
                 try:
-                    payload = {'data': ep} if self.scanned_provider != 'netshort' else api.get(f'/api/netshort/episodes/{sid}/{eid}/source')
+                    payload = {'data': ep} if self.scanned_provider != 'netshort' else netshort_episode_source(api, sid, eid)
                     candidates = source_candidates(payload)
                     if not candidates and mode != 'Chỉ phụ đề':
                         raise ToolError('Không có source được cấp; bỏ qua.')
