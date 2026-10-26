@@ -13,7 +13,7 @@ class ProviderTests(unittest.TestCase):
             def __init__(self):self.waits=[]
             def wait(self,seconds):self.waits.append(seconds);return False
         class API:
-            def __init__(self):self.stop=Stop();self.paths=[]
+            def __init__(self):self.stop=Stop();self.paths=[];self.provider='netshort'
             def get(self,path):
                 self.paths.append(path)
                 if len(self.paths)==1:raise engine.ToolError('HTTP 502: upstream returned HTTP 429')
@@ -41,7 +41,7 @@ class ProviderTests(unittest.TestCase):
             with patch.object(gateway_client,'request_json',return_value={}) as request:
                 api=engine.API('https://example.test','fixture','vi',threading.Event(),provider)
                 api.get(f'/api/{provider}/home')
-                self.assertIn('/proxy/'+provider+'/home?'+('lang' if provider=='dramabox' else 'language')+'=vi',request.call_args.args[1])
+                self.assertIn('/proxy/'+provider+'/home?language=vi',request.call_args.args[1])
             self.assertEqual(series_id('12345',provider),'12345')
             self.assertIsNone(series_id('https://evil.test/drama/12345',provider))
         self.assertEqual(series_id('https://www.dramabox.com/drama/42000003101-title','dramabox'),'42000003101')
@@ -63,8 +63,9 @@ class ProviderTests(unittest.TestCase):
                 self.assertEqual(len(w.provider_buttons),4)
                 episodes=[{'id':'101','episodeNumber':1,'sources':[{'type':'mp4','url':'https://example.test/video.mp4'}],'subtitles':[{'language':'vi_VN','url':'https://example.test/s.srt'}]}]
                 class FakeAPI:
-                    def __init__(self,*args):pass
+                    def __init__(self,*args):self.provider=args[4] if len(args)>4 else 'netshort'
                     def episodes(self,sid):return 'Phim',episodes
+                    def get(self,*args):return {'data':episodes[0]}
                 with tempfile.TemporaryDirectory() as td:
                     w.history_path=Path(td)/'history.json';w.backend.folder.set(td)
                     with patch.object(engine,'API',FakeAPI):

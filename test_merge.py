@@ -149,7 +149,7 @@ class MergeTests(unittest.TestCase):
             for ep in b.items:
                 ep['duration']=2
                 ep['subtitles']=[{'language':'vi_VN','url':'https://example.test/vi.srt'}]
-            with patch.object(engine,'download') as download,patch.object(engine,'fetch',side_effect=lambda *a,**k:io.BytesIO(b'1\n00:00:00,100 --> 00:00:00,900\nHi\n')):
+            with patch.object(engine,'API',test_parallel.FakeAPI),patch.object(engine,'download') as download,patch.object(engine,'fetch',side_effect=lambda *a,**k:io.BytesIO(b'1\n00:00:00,100 --> 00:00:00,900\nHi\n')):
                 b.start_download();self.assertTrue(idle.wait(5));download.assert_not_called()
             paths=list(Path(td).rglob('*.srt'))
             self.assertEqual(len(paths),1,events)

@@ -18,22 +18,19 @@ class DramaBoxTests(unittest.TestCase):
             self.api().get('/api/dramabox/search',{'q':'love','limit':30})
         url=urlsplit(request.call_args.args[1])
         self.assertEqual(url.path,'/api/boommini/proxy/dramabox/search')
-        self.assertEqual(parse_qs(url.query),{'query':['love'],'lang':['vi']})
+        self.assertEqual(parse_qs(url.query),{'q':['love'],'limit':['30'],'language':['vi']})
 
     def test_allepisode_contract_and_raw_chapters(self):
-        payload={'ok':True,'data':{'data':[
-            {'chapterId':'102','chapterIndex':1,'cdnList':[{'videoPathList':[
-                {'videoPath':'https://example.test/720.mp4','quality':720},
-                {'videoPath':'https://example.test/1080.mp4','quality':1080}]}]},
-            {'chapterId':'101','chapterIndex':0}]}}
+        payload={'success':True,'data':{'items':[
+            {'id':'2','episodeNumber':2},{'id':'1','episodeNumber':1}],
+            'total':2,'meta':{'title':'Phim'}}}
         with patch.object(gateway_client,'request_json',return_value=payload) as request:
             title,episodes=self.api().episodes('41000102982')
         url=urlsplit(request.call_args.args[1])
-        self.assertEqual(url.path,'/api/boommini/proxy/dramabox/allepisode')
-        self.assertEqual(parse_qs(url.query),{'bookId':['41000102982']})
-        self.assertEqual([ep['id'] for ep in episodes],['101','102'])
+        self.assertEqual(url.path,'/api/boommini/proxy/dramabox/episodes/41000102982')
+        self.assertEqual(parse_qs(url.query),{'language':['vi']})
+        self.assertEqual([ep['id'] for ep in episodes],['1','2'])
         self.assertEqual([ep['episodeNumber'] for ep in episodes],[1,2])
-        self.assertEqual(source_candidates({'data':episodes[1]})[0]['url'],'https://example.test/1080.mp4')
 
     def test_other_provider_contract_unchanged(self):
         with patch.object(gateway_client,'request_json',return_value={}) as request:

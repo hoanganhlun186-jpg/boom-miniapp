@@ -47,7 +47,7 @@ def start(backend):
             try:
                 backend.emit('status',i,'Đang lấy nguồn…')
                 api=engine.API(base,key,language,backend.stop,provider)
-                payload={'data':ep} if provider!='netshort' else engine.netshort_episode_source(api,sid,ep['id'])
+                payload=engine.episode_source(api,sid,ep['id'])
                 if backend.stop.is_set():raise engine.Cancelled('Đã dừng.')
                 candidates=engine.source_candidates(payload)
                 if not candidates and mode!='Chỉ phụ đề':raise engine.ToolError('Nguồn chưa cấp link video cho tập này.')

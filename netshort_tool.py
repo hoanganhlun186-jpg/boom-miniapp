@@ -1,4 +1,4 @@
-"""NetShort / Ezvid Tkinter prototype. Python 3.10+, standard library only.
+"""BOOM drama downloader. Python 3.10+, standard library only.
 
 This client uses authenticated BOOM server sessions; no upstream key is included.
 Downloads direct video files; HLS/DASH/DRM are deliberately unsupported.
@@ -204,15 +204,9 @@ class API(GatewayTransport):
         title = sid
         series_total=0
         for _ in range(100):
-            payload = (self.get('/api/dramabox/allepisode', {'bookId':sid}) if self.provider=='dramabox'
-                       else self.get(f'/api/{self.provider}/episodes/{sid}', params))
+            payload = self.get(f'/api/{self.provider}/episodes/{sid}', params)
             data = payload.get('data', payload)
-            if self.provider=='dramabox':
-                while isinstance(data,dict) and isinstance(data.get('data'),(dict,list)):
-                    data=data['data']
             items = data.get('items', data.get('episodes')) if isinstance(data, dict) else data
-            if self.provider=='dramabox' and isinstance(data,dict) and items is None:
-                items=data.get('chapterList')
             if not isinstance(items, list):
                 raise ToolError('Full Episodes không có data.items/data.episodes dạng danh sách.')
             if isinstance(data,dict):
@@ -225,11 +219,6 @@ class API(GatewayTransport):
             for ep in items:
                 if not isinstance(ep, dict):
                     continue
-                if self.provider=='dramabox':
-                    ep=dict(ep)
-                    ep['id']=ep.get('id') or ep.get('episodeId') or ep.get('chapterId')
-                    if not ep.get('episodeNumber') and ep.get('chapterIndex') is not None:
-                        ep['episodeNumber']=int(ep['chapterIndex'])+1
                 eid = str(ep.get('id') or ep.get('episodeId') or '')
                 if re.fullmatch(r'[A-Za-z0-9_-]{1,80}' if self.provider != 'netshort' else r'\d{1,25}', eid) and eid not in seen:
                     seen.add(eid)
@@ -241,7 +230,6 @@ class API(GatewayTransport):
                 if paging.get('hasMore') or meta.get('hasMore'):
                     raise ToolError('API báo còn trang nhưng không có nextCursor; chưa thể xác nhận đủ tập.')
                 break
-            if self.provider=='dramabox':raise ToolError('DramaBox allepisode trả phân trang ngoài cấu trúc tài liệu; cần kiểm tra phản hồi API.')
             cursor = str(cursor)
             if cursor in cursors:
                 raise ToolError('API lặp cursor phân trang; chưa thể xác nhận đủ tập.')
@@ -263,9 +251,9 @@ _NETSHORT_SOURCE_LOCK = threading.Lock()
 _NETSHORT_SOURCE_NEXT_REQUEST = [0.0]
 
 
-def netshort_episode_source(api, sid, episode_id, attempts=3):
-    """Resolve one fresh NetShort source without flooding the upstream service."""
-    path = f'/api/netshort/episodes/{sid}/{episode_id}/source'
+def episode_source(api, sid, episode_id, attempts=3):
+    """Resolve one fresh episode source without flooding the upstream service."""
+    path = f'/api/{getattr(api,"provider","netshort")}/episodes/{sid}/{episode_id}/source'
     stop = getattr(api, 'stop', None)
     # Reserve staggered start times, but do not hold the lock during network I/O:
     # video downloads remain concurrent and a slow request cannot block all others.
@@ -289,6 +277,9 @@ def netshort_episode_source(api, sid, episode_id, attempts=3):
                 raise Cancelled('Đã dừng.')
 
 
+netshort_episode_source = episode_source
+
+
 
 def source_candidates(payload):
     """Support both normalized Ezvid sources and raw NetShort play lists."""
@@ -302,7 +293,7 @@ def source_candidates(payload):
                 url=node.get(field)
                 if isinstance(url,str) and url.startswith('https://'):
                     found.append({'url':url,'quality':quality})
-            for name in ('sources', 'episodePlayList'):
+            for name in ('sources', 'streams', 'episodePlayList'):
                 rows = node.get(name)
                 if isinstance(rows, list):
                     for row in rows:
@@ -508,26 +499,21 @@ class AppLogic:
             messagebox.showinfo('Phụ đề','Quét danh sách tập trước.')
             return
         selected = [int(i) for i in self.tree.selection()]
-        if not selected and self.scanned_provider != 'netshort':
-            selected = list(range(len(self.items)))
         if not selected:
             messagebox.showinfo('Phụ đề','Chọn các tập cần kiểm tra phụ đề, hoặc bấm Chọn tất cả.')
-            return
-        if self.scanned_provider != 'netshort':
-            self.show_subtitle_choices({i: subtitle_tracks({'data':self.items[i]}) for i in selected})
             return
         base,lang,sid = self.scanned
         key = self.key.get()
         episodes = [(i,self.items[i]['id']) for i in selected]
         def job():
-            api = API(base,key,lang,self.stop)
+            api = API(base,key,lang,self.stop,self.scanned_provider)
             result = {}
             for i,eid in episodes:
                 if self.stop.is_set():
                     break
                 self.emit('status',i,'Đang kiểm tra phụ đề…')
                 try:
-                    payload = netshort_episode_source(api, sid, eid)
+                    payload = episode_source(api, sid, eid)
                     found = subtitle_tracks(payload)
                     result[i] = found
                     self.emit('status',i,f'{len({t["language"] for t in found})} ngôn ngữ phụ đề')
@@ -688,7 +674,7 @@ class AppLogic:
                 eid = ep['id']
                 self.emit('status', i, 'Đang lấy Episode Source…')
                 try:
-                    payload = {'data': ep} if self.scanned_provider != 'netshort' else netshort_episode_source(api, sid, eid)
+                    payload = episode_source(api, sid, eid)
                     candidates = source_candidates(payload)
                     if not candidates and mode != 'Chỉ phụ đề':
                         raise ToolError('Không có source được cấp; bỏ qua.')

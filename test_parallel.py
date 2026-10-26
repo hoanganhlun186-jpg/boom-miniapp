@@ -11,8 +11,9 @@ import netshort_tool as engine
 
 
 class FakeAPI:
-    def __init__(self,*args):pass
-    def get(self,*args):return {'sources':[{'url':'https://example.test/video.mp4','type':'mp4'}]}
+    def __init__(self,*args):self.provider=args[4] if len(args)>4 else 'netshort'
+    def get(self,*args):return {'sources':[{'url':'https://example.test/video.mp4','type':'mp4'}],
+        'subtitles':[{'language':'vi','url':'https://example.test/a.srt'}]}
 
 
 class Tests(unittest.TestCase):
@@ -105,7 +106,7 @@ class Tests(unittest.TestCase):
             b.items[0].update(sources=[{'type':'mp4','url':'https://example.test/a.mp4'}],
                               subtitles=[{'language':'vi','url':'https://example.test/a.srt'}])
             def download(source,path,stop,progress):path.write_bytes(b'video')
-            with patch.object(engine,'download',side_effect=download) as downloads,patch.object(engine,'fetch',side_effect=[engine.ToolError('HTTP 503'),io.BytesIO(b'1\n00:00:00,100 --> 00:00:00,900\nHi\n')]) as fetch:
+            with patch.object(engine,'API',FakeAPI),patch.object(engine,'download',side_effect=download) as downloads,patch.object(engine,'fetch',side_effect=[engine.ToolError('HTTP 503'),io.BytesIO(b'1\n00:00:00,100 --> 00:00:00,900\nHi\n')]) as fetch:
                 b.start_download();self.assertTrue(idle.wait(5))
             self.assertEqual(downloads.call_count,1)
             self.assertEqual(fetch.call_count,2)
